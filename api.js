@@ -42,11 +42,15 @@ app.post('/api/forecast', express.json(), (req, res) => {
     if (!lastNormalized) {
       return res.status(400).json({ error: 'No Excel uploaded yet' });
     }
-    const { deviceCode } = req.body;
+    const { deviceCode, simulatedInventory } = req.body;
     if (!deviceCode) {
       return res.status(400).json({ error: 'Missing deviceCode' });
     }
-    const result = runForecast(lastNormalized.deviceBOMs, lastNormalized.inventory, deviceCode);
+    // Use simulatedInventory if present, else use lastNormalized.inventory
+    const inventoryToUse = Array.isArray(simulatedInventory) && simulatedInventory.length > 0
+      ? simulatedInventory.map(item => ({ ...item, availableStock: item.afterStock ?? item.availableStock }))
+      : lastNormalized.inventory;
+    const result = runForecast(lastNormalized.deviceBOMs, inventoryToUse, deviceCode);
     res.json({ forecast: result });
   } catch (err) {
     res.status(400).json({ error: err.message });
