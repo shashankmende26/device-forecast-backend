@@ -4,12 +4,19 @@
 
 const xlsx = require('xlsx');
 
+// Predefined valid device codes
+const VALID_DEVICES = [
+  'PM125', 'PM250SK', 'STSK', 'PG', 'WGFK', 'LPMV2_FV', 'PM250MAX', 'LPM CHINA'
+];
+
 /**
  * Reads an Excel file and normalizes BOMs and inventory for multiple devices.
+ * Only includes predefined valid devices.
  * @param {string} filePath - Path to the Excel file
- * @returns {{ deviceBOMs: Object<string, Array>, inventory: Array }}
+ * @returns {{ deviceBOMs: Object<string, Array>, inventory: Array, ignoredDeviceColumns: Array }}
  *   deviceBOMs: { [deviceName]: BomItem[] }
  *   inventory: InventoryItem[]
+ *   ignoredDeviceColumns: string[]
  * @throws Error on validation failure
  */
 function normalizeExcelToBOMsAndInventory(filePath) {
@@ -17,11 +24,9 @@ function normalizeExcelToBOMsAndInventory(filePath) {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = xlsx.utils.sheet_to_json(sheet, { defval: null });
   if (!rows.length) throw new Error('Excel sheet is empty');
-  console.log(`Excel rows: ${JSON.stringify(rows)}`);
   // Robust column normalization
   const normalizeCol = (col) => String(col).replace(/\s|_/g, '').toLowerCase();
   const header = Object.keys(rows[0]);
-  console.log(`Excel header: ${header}`);
   const colMap = {};
   for (const col of header) {
     const norm = normalizeCol(col);
@@ -31,20 +36,26 @@ function normalizeExcelToBOMsAndInventory(filePath) {
     if (["maincategory", "maincat", "category", "cat", "main_category"].includes(norm)) colMap.mainCategory = col;
     if (["subcategory", "subcat", "sub_category", "sub-category"].includes(norm)) colMap.subCategory = col;
     if (["stock", "availablestock", "qtyinstock", "quantityinstock", "qty", "quantity", "available"].includes(norm)) colMap.availableStock = col;
+    if (["uom", "unitofmeasure", "unit", "measure"].includes(norm)) colMap.uom = col;
+    if (["buypriceinrs", "buyprice(rs)", "unitprice", "priceinrs", "price", "buyprice"].includes(norm)) colMap.unitPrice = col;
+    if (["stockvalue", "inventoryvalue", "value"].includes(norm)) colMap.stockValue = col;
+    if (["currency"].includes(norm)) colMap.currency = col;
+    if (["conversionrate", "rate"].includes(norm)) colMap.conversionRate = col;
+    if (["bomsum", "bomsumtotal", "bomsum(total)", "bomsum_"].includes(norm)) colMap.bomSum = col; // informational only
   }
-  // Find device columns (all columns not mapped above)
-  console.log(`Column map: ${JSON.stringify(colMap)}`);
+
+  // Only treat columns matching VALID_DEVICES as device columns (exact match)
   const mappedCols = new Set(Object.values(colMap));
-  const deviceCols = header.filter(col => !mappedCols.has(col));
+  const deviceCols = header.filter(col => VALID_DEVICES.includes(col.trim()));
+  const ignoredDeviceColumns = header.filter(col => !mappedCols.has(col) && !deviceCols.includes(col));
   if (!colMap.partId || !colMap.partName || !colMap.mainCategory || !colMap.subCategory || !colMap.availableStock)
     throw new Error('Missing one or more required columns: material code, material name, main category, sub category, stock');
-  if (deviceCols.length === 0) throw new Error('No device columns found in Excel');
+  if (deviceCols.length === 0) throw new Error('No valid device columns found in Excel. Expected one of: ' + VALID_DEVICES.join(", "));
 
   // Build inventory and per-device BOMs
   const inventory = [];
   const deviceBOMs = {};
   for (const device of deviceCols) deviceBOMs[device] = [];
-  console.log(`rows: ${JSON.stringify(rows)}`);
   for (const row of rows) {
     // Validate material fields
     const partId = row[colMap.partId];
@@ -62,10 +73,17 @@ function normalizeExcelToBOMsAndInventory(filePath) {
       mainCategory: String(mainCategory),
       subCategory: String(subCategory),
       availableStock: availableStock,
+      uom: colMap.uom ? row[colMap.uom] : null,
+      unitPrice: colMap.unitPrice ? parseNumber(row[colMap.unitPrice]) : null,
+      stockValue: colMap.stockValue ? parseNumber(row[colMap.stockValue]) : null,
+      currency: colMap.currency ? row[colMap.currency] : null,
+      conversionRate: colMap.conversionRate ? parseNumber(row[colMap.conversionRate]) : null,
+      // BOM SUM is informational only, not used in logic
+      bomSum: colMap.bomSum ? parseNumber(row[colMap.bomSum]) : null
     };
     inventory.push(invItem);
 
-    // Per-device BOMs
+    // Per-device BOMs: only validate device columns, ignore all others
     for (const device of deviceCols) {
       const qty = row[device];
       if (qty == null || qty === "" || (typeof qty === "string" && qty.trim() === "")) continue;
@@ -100,7 +118,7 @@ function normalizeExcelToBOMsAndInventory(filePath) {
     if (typeof inv.availableStock !== 'number' || inv.availableStock < 0) throw new Error(`Invalid availableStock for partId ${inv.partId}`);
   }
 
-  return { deviceBOMs, inventory };
+  return { deviceBOMs, inventory, ignoredDeviceColumns };
 }
 
 function normalizeQuantityType(qt) {
